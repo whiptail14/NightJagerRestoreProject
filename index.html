@@ -62,13 +62,14 @@ const PLAYER_X    = 16;
 const TANK_W = 80, TANK_H = 22;
 const ROCKET_W = 20, ROCKET_H = 6;
 const PLAYER_W = 24, PLAYER_H = 20;
+const ROUND_W = 12, ROUND_H = 5;   // tank return-fire projectile
 
 // Game states
 const ST = { TITLE: 0, INSTRUCTIONS: 1, PLAYING: 2, GAME_OVER: 3, HIGH_SCORE: 4 };
 
 // ── Game Variables ───────────────────────────────────────────────────────────
 let state, score, ammo, timeLeft, wave, playerRow;
-let tanks, rockets, waveClearPending, waveTimer;
+let tanks, rockets, tankRounds, waveClearPending, waveTimer;
 let gameEnded, gameOverTimer, enterNameMode, playerName;
 let highScores = [];
 let lastTime = 0;
@@ -129,6 +130,7 @@ function startGame() {
 function spawnWave() {
   tanks = [];
   rockets = [];
+  tankRounds = [];
   waveClearPending = false;
   waveTimer = null;
   timeLeft = 20;
@@ -143,6 +145,7 @@ function spawnWave() {
       exploding:    false,
       explodeTimer: 0,
       flash:        0,
+      fireTimer:    2 + Math.random() * 3,  // first shot: 2–5 s
     });
   }
 }
@@ -199,10 +202,37 @@ function updateGame(dt) {
     }
     if (!t.alive) continue;
     t.x -= t.speed * dt;
-    if (t.x + TANK_W < 0) t.alive = false; // escaped
+    if (t.x + TANK_W < 0) { t.alive = false; continue; } // escaped
+
+    // Tank return fire
+    t.fireTimer -= dt;
+    if (t.fireTimer <= 0 && t.x > 0 && t.x < W) {
+      tankRounds.push({
+        x:      t.x - 14,                // tip of barrel
+        y:      t.y + 3,                 // barrel centre-y
+        speed:  180 + wave * 12,         // wave 1 = 192, wave 5 = 240 px/s
+        active: true,
+      });
+      t.fireTimer = 1.5 + Math.random() * 2.5; // next shot: 1.5–4 s
+    }
   }
 
-  // Collisions
+  // Tank rounds
+  for (const r of tankRounds) {
+    if (!r.active) continue;
+    r.x -= r.speed * dt;
+    if (r.x + ROUND_W < 0) { r.active = false; continue; }
+
+    // Hit player?
+    const px = PLAYER_X, py = LANE_Y[playerRow] - 10;
+    if (rectsOverlap(r.x, r.y, ROUND_W, ROUND_H, px, py, PLAYER_W, PLAYER_H)) {
+      r.active = false;
+      endGame();
+      return;
+    }
+  }
+
+  // Player rocket collisions
   for (const r of rockets) {
     if (!r.active) continue;
     for (const t of tanks) {
@@ -314,6 +344,18 @@ function drawRockets() {
   }
 }
 
+function drawTankRounds() {
+  for (const r of tankRounds) {
+    if (!r.active) continue;
+    // Tip flash (yellow)
+    ctx.fillStyle = C.bYellow;
+    ctx.fillRect(r.x, r.y + 1, 3, 3);
+    // Body (red)
+    ctx.fillStyle = C.bRed;
+    ctx.fillRect(r.x + 3, r.y, ROUND_W - 3, ROUND_H);
+  }
+}
+
 function drawHUD() {
   const hudY = GAME_BOT + BOT_BORDER;
   ctx.fillStyle = C.black;
@@ -395,6 +437,7 @@ function drawPlaying() {
   ctx.fillRect(0, 0, W, H);
   drawStars();
   drawTanks();
+  drawTankRounds();
   drawRockets();
   drawPlayer();
   drawHUD();
