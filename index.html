@@ -65,10 +65,10 @@ const PLAYER_W = 24, PLAYER_H = 20;
 const ROUND_W = 12, ROUND_H = 5;   // tank return-fire projectile
 
 // Game states
-const ST = { TITLE: 0, INSTRUCTIONS: 1, PLAYING: 2, GAME_OVER: 3, HIGH_SCORE: 4 };
+const ST = { TITLE: 0, INSTRUCTIONS: 1, PLAYING: 2, GAME_OVER: 3, HIGH_SCORE: 4, CONGRATS: 5 };
 
 // ── Game Variables ───────────────────────────────────────────────────────────
-let state, score, ammo, timeLeft, wave, playerRow;
+let state, score, ammo, wave, playerRow, playerDir;
 let tanks, rockets, tankRounds, waveClearPending, waveTimer;
 let gameEnded, gameOverTimer, enterNameMode, playerName;
 let highScores = [];
@@ -119,9 +119,10 @@ function saveScore(name, sc) {
 // ── Game Init ────────────────────────────────────────────────────────────────
 function startGame() {
   score      = 0;
-  ammo       = 50;
+  ammo       = 70;
   wave       = 1;
   playerRow  = 1;
+  playerDir  = 0;
   gameEnded  = false;
   spawnWave();
   state = ST.PLAYING;
@@ -133,7 +134,6 @@ function spawnWave() {
   tankRounds = [];
   waveClearPending = false;
   waveTimer = null;
-  timeLeft = 20;
   for (let i = 0; i < 5; i++) {
     const row = Math.floor(Math.random() * 3);
     tanks.push({
@@ -161,7 +161,7 @@ function fireRocket() {
     active: true,
   });
   sndFire();
-  if (ammo <= 0) endGame();
+  if (ammo <= 0) endCongrats();
 }
 
 function endGame() {
@@ -174,16 +174,22 @@ function endGame() {
   sndGameOver();
 }
 
+function endCongrats() {
+  if (gameEnded) return;
+  gameEnded     = true;
+  gameOverTimer = 2.8;
+  enterNameMode = false;
+  playerName    = '';
+  state         = ST.CONGRATS;
+  sndWaveClear();
+}
+
 function rectsOverlap(x1,y1,w1,h1, x2,y2,w2,h2) {
   return x1 < x2+w2 && x1+w1 > x2 && y1 < y2+h2 && y1+h1 > y2;
 }
 
 function updateGame(dt) {
   if (waveClearPending) return;
-
-  // Time
-  timeLeft -= dt;
-  if (timeLeft <= 0) { timeLeft = 0; endGame(); return; }
 
   // Rockets
   for (const r of rockets) {
@@ -281,21 +287,32 @@ function drawStars() {
 }
 
 function drawPlayer() {
-  const cx = PLAYER_X;
-  const cy = LANE_Y[playerRow];
-  // Body
+  const cx    = PLAYER_X + 14;          // rotation centre x
+  const cy    = LANE_Y[playerRow];      // rotation centre y
+  const angle = playerDir * (Math.PI / 12);  // ±15°
+
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(angle);
+
+  // Fuselage
   ctx.fillStyle = C.green;
-  ctx.fillRect(cx, cy - 10, PLAYER_W, PLAYER_H);
-  // Cockpit
+  ctx.fillRect(-14, -3, 28, 6);
+  // Nose (pointing right)
   ctx.fillStyle = C.bGreen;
-  ctx.fillRect(cx + 2, cy - 8, 8, 8);
-  // Barrel
-  ctx.fillStyle = C.green;
-  ctx.fillRect(cx + PLAYER_W, cy - 3, 14, 6);
-  // Wheels
+  ctx.fillRect(14, -2, 7, 4);
+  // Cockpit bubble
+  ctx.fillStyle = C.bGreen;
+  ctx.fillRect(-4, -8, 10, 7);
+  // Wings (wide vertical slab)
   ctx.fillStyle = C.cyan;
-  ctx.fillRect(cx + 2,  cy + 10, 8, 4);
-  ctx.fillRect(cx + 14, cy + 10, 8, 4);
+  ctx.fillRect(-2, -12, 8, 24);
+  // Tail fins
+  ctx.fillStyle = C.cyan;
+  ctx.fillRect(-14, -10, 7, 6);   // top fin
+  ctx.fillRect(-14,   4, 7, 6);   // bottom fin
+
+  ctx.restore();
 }
 
 function drawTanks() {
@@ -362,10 +379,8 @@ function drawHUD() {
   ctx.fillRect(0, hudY, W, HUD_H);
 
   const ty = hudY + 28;
-  text(`SCORE:${String(score).padStart(6, ' ')}`, 8,    ty, C.bWhite,  8);
-  ctext(`AMMO:${String(ammo).padStart(3, ' ')}`,  ty,       C.bCyan,   8);
-  text(`TIME:${String(Math.ceil(timeLeft)).padStart(3, ' ')}`,
-       W - 8, ty, timeLeft <= 5 ? C.bRed : C.bYellow, 8, 'right');
+  text(`SCORE:${String(score).padStart(6, ' ')}`, 8,   ty, C.bWhite, 8);
+  text(`AMMO:${String(ammo).padStart(3, ' ')}`,   W-8, ty, C.bCyan,  8, 'right');
   // Wave
   ctext(`WAVE ${wave}`, hudY + 12, C.green, 7);
 }
@@ -416,8 +431,8 @@ function drawInstructions() {
     ['Ødelegg så mange tanks som mulig!', C.bGreen, 8],
     ['Destroy as many tanks as possible!',C.green,  7],
     ['',                                  C.white,  7],
-    ['50 raketter  •  20 sekunder',       C.cyan,   7],
-    ['50 rockets   •  20 seconds',        C.white,  7],
+    ['Du har 70 raketter. Bruk dem godt!', C.cyan,   7],
+    ['You have 70 rockets. Use them well!',C.white,  7],
     ['',                                  C.white,  7],
     ['↑ / ↓  =  BEVEG / MOVE',            C.bCyan,  8],
     ['SPACE / Z  =  SKYT / FIRE',         C.bCyan,  8],
@@ -471,6 +486,28 @@ function drawGameOver() {
   }
 }
 
+function drawCongrats() {
+  ctx.fillStyle = C.black;
+  ctx.fillRect(0, 0, W, H);
+  drawStars();
+
+  ctext('GRATULERER!',       125, C.bYellow, 18);
+  ctext('CONGRATULATIONS!',  155, C.yellow,   9);
+  ctext('★ ★ ★ ★ ★ ★ ★ ★', 180, C.bGreen,   8);
+  ctext(`SCORE: ${score}`,   215, C.bWhite,  11);
+  ctext(`WAVE:  ${wave}`,    242, C.cyan,     9);
+
+  if (enterNameMode) {
+    ctext('SKRIV DITT NAVN:', 285, C.bWhite, 8);
+    ctext('ENTER YOUR NAME:', 305, C.white,  7);
+    ctx.strokeStyle = C.bYellow;
+    ctx.lineWidth   = 2;
+    ctx.strokeRect(120, 318, 272, 30);
+    ctext(playerName + (blink() ? '█' : ' '), 340, C.bYellow, 10);
+    ctext('(ENTER to save)', 370, C.white, 7);
+  }
+}
+
 function drawHighScore() {
   ctx.fillStyle = C.black;
   ctx.fillRect(0, 0, W, H);
@@ -498,7 +535,7 @@ function drawHighScore() {
 function update(dt) {
   if (state === ST.PLAYING) {
     updateGame(dt);
-  } else if (state === ST.GAME_OVER) {
+  } else if (state === ST.GAME_OVER || state === ST.CONGRATS) {
     gameOverTimer -= dt;
     if (gameOverTimer <= 0 && !enterNameMode) {
       enterNameMode = true;
@@ -512,6 +549,7 @@ function draw() {
     case ST.INSTRUCTIONS: drawInstructions(); break;
     case ST.PLAYING:      drawPlaying();      break;
     case ST.GAME_OVER:    drawGameOver();     break;
+    case ST.CONGRATS:     drawCongrats();     break;
     case ST.HIGH_SCORE:   drawHighScore();    break;
   }
 }
@@ -528,8 +566,8 @@ function loop(timestamp) {
 document.addEventListener('keydown', e => {
   initAudio();
 
-  // Name entry during game over
-  if (state === ST.GAME_OVER && enterNameMode) {
+  // Name entry during game over or congrats
+  if ((state === ST.GAME_OVER || state === ST.CONGRATS) && enterNameMode) {
     if (e.key === 'Enter') {
       saveScore(playerName || 'ANON', score);
       enterNameMode = false;
@@ -545,11 +583,11 @@ document.addEventListener('keydown', e => {
   if (state === ST.TITLE)        { state = ST.INSTRUCTIONS; return; }
   if (state === ST.INSTRUCTIONS) { startGame(); return; }
   if (state === ST.HIGH_SCORE)   { state = ST.TITLE; return; }
-  if (state === ST.GAME_OVER && !enterNameMode) return; // wait for timer
+  if ((state === ST.GAME_OVER || state === ST.CONGRATS) && !enterNameMode) return; // wait for timer
 
   if (state === ST.PLAYING) {
-    if (e.key === 'ArrowUp')   { e.preventDefault(); playerRow = Math.max(0, playerRow - 1); }
-    if (e.key === 'ArrowDown') { e.preventDefault(); playerRow = Math.min(2, playerRow + 1); }
+    if (e.key === 'ArrowUp')   { e.preventDefault(); playerRow = Math.max(0, playerRow - 1); playerDir = -1; }
+    if (e.key === 'ArrowDown') { e.preventDefault(); playerRow = Math.min(2, playerRow + 1); playerDir =  1; }
     if (e.key === ' ' || e.key === 'z' || e.key === 'Z') { e.preventDefault(); fireRocket(); }
   }
 });
