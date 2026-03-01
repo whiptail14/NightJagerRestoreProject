@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Night Jager</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #111;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: 'Press Start 2P', monospace;
+    }
+    canvas {
+      display: block;
+      image-rendering: pixelated;
+      border: 2px solid #00CD00;
+    }
+  </style>
+</head>
+<body>
+<canvas id="game" width="512" height="384"></canvas>
+<script>
+// ── Constants ────────────────────────────────────────────────────────────────
+const W = 512, H = 384;
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+// ZX Spectrum colour palette
+const C = {
+  black:   '#000000',
+  blue:    '#0000CD',
+  red:     '#CD0000',
+  green:   '#00CD00',
+  cyan:    '#00CDCD',
+  yellow:  '#CDCD00',
+  white:   '#CDCDCD',
+  bRed:    '#FF0000',
+  bGreen:  '#00FF00',
+  bCyan:   '#00FFFF',
+  bYellow: '#FFFF00',
+  bWhite:  '#FFFFFF',
+};
+
+// Layout
+const TOP_BORDER  = 32;   // height of top star strip
+const BOT_BORDER  = 32;   // height of bottom star strip
+const HUD_H       = 48;   // height of HUD area below bottom star
+const GAME_TOP    = TOP_BORDER;
+const GAME_BOT    = H - BOT_BORDER - HUD_H;  // = 384 - 32 - 48 = 304
+const GAME_H      = GAME_BOT - GAME_TOP;      // = 272
+const LANE_H      = GAME_H / 3;               // ≈ 90.7
+const LANE_Y      = [0, 1, 2].map(i => Math.round(GAME_TOP + LANE_H * i + LANE_H / 2));
+const PLAYER_X    = 16;
+
+// Sprite sizes
+const TANK_W = 80, TANK_H = 22;
+const ROCKET_W = 20, ROCKET_H = 6;
+const PLAYER_W = 24, PLAYER_H = 20;
+
+// Game states
+const ST = { TITLE: 0, INSTRUCTIONS: 1, PLAYING: 2, GAME_OVER: 3, HIGH_SCORE: 4 };
+
+// ── Game Variables ───────────────────────────────────────────────────────────
+let state, score, ammo, timeLeft, wave, playerRow;
+let tanks, rockets, waveClearPending, waveTimer;
+let gameEnded, gameOverTimer, enterNameMode, playerName;
+let highScores = [];
+let lastTime = 0;
+
+// ── Audio ────────────────────────────────────────────────────────────────────
+let audioCtx = null;
+
+function initAudio() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+}
+
+function beep(freq, dur, delay = 0) {
+  if (!audioCtx) return;
+  const osc  = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = 'square';
+  osc.frequency.value = freq;
+  gain.gain.value = 0.08;
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  const t = audioCtx.currentTime + delay;
+  osc.start(t);
+  osc.stop(t + dur);
+}
+
+const sndFire      = () => beep(440, 0.05);
+const sndNoAmmo    = () => { beep(200, 0.08); beep(150, 0.08, 0.1); };
+const sndExplosion = () => { beep(120, 0.15); beep(70, 0.25, 0.1); };
+const sndWaveClear = () => [523,659,784,1047].forEach((f,i) => beep(f, 0.1, i*0.13));
+const sndGameOver  = () => [380,280,180,120].forEach((f,i) => beep(f, 0.18, i*0.2));
+
+// ── High Scores ──────────────────────────────────────────────────────────────
+function loadScores() {
+  try { highScores = JSON.parse(localStorage.getItem('nightjager_scores') || '[]'); }
+  catch { highScores = []; }
+}
+
+function saveScore(name, sc) {
+  highScores.push({ name: (name || 'ANON').slice(0, 10).toUpperCase(), score: sc });
+  highScores.sort((a, b) => b.score - a.score);
+  highScores = highScores.slice(0, 5);
+  localStorage.setItem('nightjager_scores', JSON.stringify(highScores));
+}
+
+// ── Game Init ────────────────────────────────────────────────────────────────
+function startGame() {
+  score      = 0;
+  ammo       = 50;
+  wave       = 1;
+  playerRow  = 1;
+  gameEnded  = false;
+  spawnWave();
+  state = ST.PLAYING;
+}
+
+function spawnWave() {
+  tanks = [];
+  rockets = [];
+  waveClearPending = false;
+  waveTimer = null;
+  timeLeft = 20;
+  for (let i = 0; i < 5; i++) {
+    const row = Math.floor(Math.random() * 3);
+    tanks.push({
+      x:            W + 60 + i * 140,
+      y:            LANE_Y[row] - TANK_H / 2,
+      row,
+      speed:        55 + wave * 10,
+      alive:        true,
+      exploding:    false,
+      explodeTimer: 0,
+      flash:        0,
+    });
+  }
+}
+
+// ── Gameplay ─────────────────────────────────────────────────────────────────
+function fireRocket() {
+  if (ammo <= 0) { sndNoAmmo(); return; }
+  ammo--;
+  rockets.push({
+    x:      PLAYER_X + PLAYER_W,
+    y:      LANE_Y[playerRow] - ROCKET_H / 2,
+    speed:  320,
+    active: true,
+  });
+  sndFire();
+  if (ammo <= 0) endGame();
+}
+
+function endGame() {
+  if (gameEnded) return;
+  gameEnded     = true;
+  gameOverTimer = 2.8;
+  enterNameMode = false;
+  playerName    = '';
+  state         = ST.GAME_OVER;
+  sndGameOver();
+}
+
+function rectsOverlap(x1,y1,w1,h1, x2,y2,w2,h2) {
+  return x1 < x2+w2 && x1+w1 > x2 && y1 < y2+h2 && y1+h1 > y2;
+}
+
+function updateGame(dt) {
+  if (waveClearPending) return;
+
+  // Time
+  timeLeft -= dt;
+  if (timeLeft <= 0) { timeLeft = 0; endGame(); return; }
+
+  // Rockets
+  for (const r of rockets) {
+    if (!r.active) continue;
+    r.x += r.speed * dt;
+    if (r.x > W) r.active = false;
+  }
+
+  // Tanks
+  for (const t of tanks) {
+    if (t.exploding) {
+      t.explodeTimer -= dt;
+      t.flash        += dt * 18;
+      if (t.explodeTimer <= 0) { t.exploding = false; t.alive = false; }
+      continue;
+    }
+    if (!t.alive) continue;
+    t.x -= t.speed * dt;
+    if (t.x + TANK_W < 0) t.alive = false; // escaped
+  }
+
+  // Collisions
+  for (const r of rockets) {
+    if (!r.active) continue;
+    for (const t of tanks) {
+      if (!t.alive || t.exploding) continue;
+      if (rectsOverlap(r.x, r.y, ROCKET_W, ROCKET_H, t.x, t.y, TANK_W, TANK_H)) {
+        r.active      = false;
+        t.exploding   = true;
+        t.explodeTimer = 0.55;
+        t.flash        = 0;
+        score += 100;
+        sndExplosion();
+      }
+    }
+  }
+
+  // Wave complete?
+  const allDone = tanks.every(t => !t.alive && !t.exploding);
+  if (allDone && !waveClearPending) {
+    waveClearPending = true;
+    sndWaveClear();
+    waveTimer = setTimeout(() => { wave++; spawnWave(); }, 1400);
+  }
+}
+
+// ── Drawing ──────────────────────────────────────────────────────────────────
+function text(str, x, y, color, size, align = 'left') {
+  ctx.fillStyle  = color;
+  ctx.font       = `${size}px 'Press Start 2P', monospace`;
+  ctx.textAlign  = align;
+  ctx.fillText(str, x, y);
+}
+
+function ctext(str, y, color, size) {
+  text(str, W / 2, y, color, size, 'center');
+}
+
+function drawStars() {
+  ctx.fillStyle = C.bYellow;
+  ctx.font      = '16px monospace';
+  ctx.textAlign = 'left';
+  const step = 16;
+  for (let x = 0; x < W; x += step) {
+    ctx.fillText('★', x, TOP_BORDER - 6);
+    ctx.fillText('★', x, GAME_BOT + 18);
+  }
+}
+
+function drawPlayer() {
+  const cx = PLAYER_X;
+  const cy = LANE_Y[playerRow];
+  // Body
+  ctx.fillStyle = C.green;
+  ctx.fillRect(cx, cy - 10, PLAYER_W, PLAYER_H);
+  // Cockpit
+  ctx.fillStyle = C.bGreen;
+  ctx.fillRect(cx + 2, cy - 8, 8, 8);
+  // Barrel
+  ctx.fillStyle = C.green;
+  ctx.fillRect(cx + PLAYER_W, cy - 3, 14, 6);
+  // Wheels
+  ctx.fillStyle = C.cyan;
+  ctx.fillRect(cx + 2,  cy + 10, 8, 4);
+  ctx.fillRect(cx + 14, cy + 10, 8, 4);
+}
+
+function drawTanks() {
+  for (const t of tanks) {
+    if (!t.alive && !t.exploding) continue;
+
+    if (t.exploding) {
+      // Flash yellow/red
+      ctx.fillStyle = Math.floor(t.flash) % 2 === 0 ? C.bYellow : C.bRed;
+      ctx.fillRect(t.x - 6, t.y - 6, TANK_W + 12, TANK_H + 12);
+      ctx.fillStyle = C.yellow;
+      ctx.fillRect(t.x, t.y, TANK_W, TANK_H);
+      ctext('*BOOM*', t.y + TANK_H / 2 + 6, C.bYellow, 8);
+      continue;
+    }
+
+    // Body
+    ctx.fillStyle = C.green;
+    ctx.fillRect(t.x, t.y + 8, TANK_W, TANK_H - 8);
+    // Turret
+    ctx.fillStyle = C.bGreen;
+    ctx.fillRect(t.x + 18, t.y, 32, 12);
+    // Barrel (pointing left)
+    ctx.fillStyle = C.green;
+    ctx.fillRect(t.x - 14, t.y + 3, 16, 5);
+    // Wheels
+    ctx.fillStyle = C.cyan;
+    for (let i = 0; i < 4; i++) {
+      ctx.fillRect(t.x + 6 + i * 18, t.y + TANK_H - 1, 13, 5);
+    }
+  }
+}
+
+function drawRockets() {
+  for (const r of rockets) {
+    if (!r.active) continue;
+    // Flame
+    ctx.fillStyle = C.bYellow;
+    ctx.fillRect(r.x - 8, r.y + 1, 8, 4);
+    // Body
+    ctx.fillStyle = C.bCyan;
+    ctx.fillRect(r.x, r.y, ROCKET_W, ROCKET_H);
+    // Tip
+    ctx.fillStyle = C.bWhite;
+    ctx.fillRect(r.x + ROCKET_W - 3, r.y + 1, 3, 4);
+  }
+}
+
+function drawHUD() {
+  const hudY = GAME_BOT + BOT_BORDER;
+  ctx.fillStyle = C.black;
+  ctx.fillRect(0, hudY, W, HUD_H);
+
+  const ty = hudY + 28;
+  text(`SCORE:${String(score).padStart(6, ' ')}`, 8,    ty, C.bWhite,  8);
+  ctext(`AMMO:${String(ammo).padStart(3, ' ')}`,  ty,       C.bCyan,   8);
+  text(`TIME:${String(Math.ceil(timeLeft)).padStart(3, ' ')}`,
+       W - 8, ty, timeLeft <= 5 ? C.bRed : C.bYellow, 8, 'right');
+  // Wave
+  ctext(`WAVE ${wave}`, hudY + 12, C.green, 7);
+}
+
+// ── Screens ──────────────────────────────────────────────────────────────────
+const blink = () => Math.floor(Date.now() / 600) % 2 === 0;
+
+function drawTitle() {
+  ctx.fillStyle = C.black;
+  ctx.fillRect(0, 0, W, H);
+  drawStars();
+
+  ctext('NIGHT JAGER', 105, C.bYellow, 20);
+  ctext('★★★★★★★★★★★★★★★★', 130, C.yellow, 8);
+  ctext('by Hans Chr. Sander', 165, C.cyan, 8);
+  ctext('1984  /  2025', 190, C.white, 7);
+
+  if (blink()) {
+    ctext('TRYKK EN TAST', 255, C.bWhite, 9);
+    ctext('PRESS ANY KEY', 278, C.white,  7);
+  }
+
+  if (highScores.length > 0) {
+    ctext(`BEST: ${highScores[0].name}  ${highScores[0].score}`, 330, C.bGreen, 8);
+  }
+
+  // Draw a small demo tank
+  ctx.fillStyle = C.green;
+  ctx.fillRect(200, 215, 50, 14);
+  ctx.fillStyle = C.bGreen;
+  ctx.fillRect(215, 208, 20, 9);
+  ctx.fillStyle = C.cyan;
+  for (let i = 0; i < 3; i++) ctx.fillRect(204 + i * 16, 227, 10, 4);
+}
+
+function drawInstructions() {
+  ctx.fillStyle = C.black;
+  ctx.fillRect(0, 0, W, H);
+  drawStars();
+
+  ctext('INSTRUKSJONER', 60, C.bYellow, 10);
+  ctext('INSTRUCTIONS',  80, C.yellow,  7);
+
+  const lines = [
+    ['Du er kaptein i et fly.',          C.cyan,   8],
+    ["You're a captain in a plane.",      C.white,  7],
+    ['',                                  C.white,  7],
+    ['Ødelegg så mange tanks som mulig!', C.bGreen, 8],
+    ['Destroy as many tanks as possible!',C.green,  7],
+    ['',                                  C.white,  7],
+    ['50 raketter  •  20 sekunder',       C.cyan,   7],
+    ['50 rockets   •  20 seconds',        C.white,  7],
+    ['',                                  C.white,  7],
+    ['↑ / ↓  =  BEVEG / MOVE',            C.bCyan,  8],
+    ['SPACE / Z  =  SKYT / FIRE',         C.bCyan,  8],
+  ];
+
+  let y = 108;
+  for (const [str, color, size] of lines) {
+    if (str) ctext(str, y, color, size);
+    y += (size || 7) + 9;
+  }
+
+  if (blink()) ctext('TRYKK EN TAST / PRESS ANY KEY', H - 18, C.bWhite, 7);
+}
+
+function drawPlaying() {
+  ctx.fillStyle = C.black;
+  ctx.fillRect(0, 0, W, H);
+  drawStars();
+  drawTanks();
+  drawRockets();
+  drawPlayer();
+  drawHUD();
+
+  if (waveClearPending) {
+    // Semi-transparent overlay text
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    ctx.fillRect(120, H/2 - 28, 272, 44);
+    ctext('★ WAVE CLEAR! ★', H/2 + 5, C.bYellow, 12);
+  }
+}
+
+function drawGameOver() {
+  ctx.fillStyle = C.black;
+  ctx.fillRect(0, 0, W, H);
+  drawStars();
+
+  ctext('GAME OVER',    138, C.bRed,    20);
+  ctext(`SCORE: ${score}`, 188, C.bYellow, 11);
+  ctext(`WAVE:  ${wave}`,  215, C.cyan,     9);
+
+  if (enterNameMode) {
+    ctext('SKRIV DITT NAVN:', 272, C.bWhite, 8);
+    ctext('ENTER YOUR NAME:', 292, C.white,  7);
+    // Name input box
+    ctx.strokeStyle = C.bGreen;
+    ctx.lineWidth   = 2;
+    ctx.strokeRect(120, 308, 272, 30);
+    ctext(playerName + (blink() ? '█' : ' '), 330, C.bGreen, 10);
+    ctext('(ENTER to save)', 360, C.white, 7);
+  }
+}
+
+function drawHighScore() {
+  ctx.fillStyle = C.black;
+  ctx.fillRect(0, 0, W, H);
+  drawStars();
+
+  ctext('HALL OF FAME',  62, C.bYellow, 12);
+  ctext('★ ★ ★ ★ ★ ★', 86, C.yellow,  9);
+
+  if (highScores.length === 0) {
+    ctext('INGEN POENG ENNÅ', 200, C.white, 9);
+    ctext('NO SCORES YET',    224, C.white, 7);
+  } else {
+    const rowColors = [C.bYellow, C.bWhite, C.cyan, C.green, C.white];
+    highScores.forEach((e, i) => {
+      const nameStr  = e.name.padEnd(10, ' ');
+      const scoreStr = String(e.score).padStart(6, ' ');
+      ctext(`${i+1}. ${nameStr} ${scoreStr}`, 128 + i * 36, rowColors[i], 9);
+    });
+  }
+
+  if (blink()) ctext('TRYKK EN TAST / PRESS ANY KEY', H - 18, C.bWhite, 7);
+}
+
+// ── Main Loop ────────────────────────────────────────────────────────────────
+function update(dt) {
+  if (state === ST.PLAYING) {
+    updateGame(dt);
+  } else if (state === ST.GAME_OVER) {
+    gameOverTimer -= dt;
+    if (gameOverTimer <= 0 && !enterNameMode) {
+      enterNameMode = true;
+    }
+  }
+}
+
+function draw() {
+  switch (state) {
+    case ST.TITLE:        drawTitle();        break;
+    case ST.INSTRUCTIONS: drawInstructions(); break;
+    case ST.PLAYING:      drawPlaying();      break;
+    case ST.GAME_OVER:    drawGameOver();     break;
+    case ST.HIGH_SCORE:   drawHighScore();    break;
+  }
+}
+
+function loop(timestamp) {
+  const dt = Math.min((timestamp - lastTime) / 1000, 0.05);
+  lastTime = timestamp;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+// ── Input ────────────────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  initAudio();
+
+  // Name entry during game over
+  if (state === ST.GAME_OVER && enterNameMode) {
+    if (e.key === 'Enter') {
+      saveScore(playerName || 'ANON', score);
+      enterNameMode = false;
+      state = ST.HIGH_SCORE;
+    } else if (e.key === 'Backspace') {
+      playerName = playerName.slice(0, -1);
+    } else if (e.key.length === 1 && playerName.length < 10) {
+      playerName += e.key.toUpperCase();
+    }
+    return;
+  }
+
+  if (state === ST.TITLE)        { state = ST.INSTRUCTIONS; return; }
+  if (state === ST.INSTRUCTIONS) { startGame(); return; }
+  if (state === ST.HIGH_SCORE)   { state = ST.TITLE; return; }
+  if (state === ST.GAME_OVER && !enterNameMode) return; // wait for timer
+
+  if (state === ST.PLAYING) {
+    if (e.key === 'ArrowUp')   { e.preventDefault(); playerRow = Math.max(0, playerRow - 1); }
+    if (e.key === 'ArrowDown') { e.preventDefault(); playerRow = Math.min(2, playerRow + 1); }
+    if (e.key === ' ' || e.key === 'z' || e.key === 'Z') { e.preventDefault(); fireRocket(); }
+  }
+});
+
+// ── Boot ─────────────────────────────────────────────────────────────────────
+loadScores();
+state = ST.TITLE;
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
