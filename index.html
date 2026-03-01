@@ -68,7 +68,7 @@ const ROUND_W = 12, ROUND_H = 5;   // tank return-fire projectile
 const ST = { TITLE: 0, INSTRUCTIONS: 1, PLAYING: 2, GAME_OVER: 3, HIGH_SCORE: 4, CONGRATS: 5 };
 
 // ── Game Variables ───────────────────────────────────────────────────────────
-let state, score, ammo, wave, playerRow, playerDir;
+let state, score, ammo, wave, playerRow;
 let tanks, rockets, tankRounds, waveClearPending, waveTimer;
 let gameEnded, gameOverTimer, enterNameMode, playerName;
 let highScores = [];
@@ -122,7 +122,6 @@ function startGame() {
   ammo       = 70;
   wave       = 1;
   playerRow  = 1;
-  playerDir  = 0;
   gameEnded  = false;
   spawnWave();
   state = ST.PLAYING;
@@ -140,12 +139,12 @@ function spawnWave() {
       x:            W + 60 + i * 140,
       y:            LANE_Y[row] - TANK_H / 2,
       row,
-      speed:        55 + wave * 10,
+      speed:        55 + wave * 9 + Math.max(0, wave - 7) * 9,
       alive:        true,
       exploding:    false,
       explodeTimer: 0,
       flash:        0,
-      fireTimer:    2 + Math.random() * 3,  // first shot: 2–5 s
+      fireTimer:    Math.max(0.6, 1.5 - wave * 0.06) + Math.random() * Math.max(0.8, 2.5 - wave * 0.15),
     });
   }
 }
@@ -216,10 +215,10 @@ function updateGame(dt) {
       tankRounds.push({
         x:      t.x - 14,                // tip of barrel
         y:      t.y + 3,                 // barrel centre-y
-        speed:  180 + wave * 12,         // wave 1 = 192, wave 5 = 240 px/s
+        speed:  180 + wave * 10 + Math.max(0, wave - 7) * 10,
         active: true,
       });
-      t.fireTimer = 1.5 + Math.random() * 2.5; // next shot: 1.5–4 s
+      t.fireTimer = Math.max(0.6, 1.5 - wave * 0.06) + Math.random() * Math.max(0.8, 2.5 - wave * 0.15);
     }
   }
 
@@ -259,7 +258,10 @@ function updateGame(dt) {
   if (allDone && !waveClearPending) {
     waveClearPending = true;
     sndWaveClear();
-    waveTimer = setTimeout(() => { wave++; spawnWave(); }, 1400);
+    waveTimer = setTimeout(() => {
+      wave++;
+      if (wave > 12) { endCongrats(); } else { spawnWave(); }
+    }, 1400);
   }
 }
 
@@ -287,32 +289,24 @@ function drawStars() {
 }
 
 function drawPlayer() {
-  const cx    = PLAYER_X + 14;          // rotation centre x
-  const cy    = LANE_Y[playerRow];      // rotation centre y
-  const angle = playerDir * (Math.PI / 12);  // ±15°
-
-  ctx.save();
-  ctx.translate(cx, cy);
-  ctx.rotate(angle);
-
+  const cx = PLAYER_X + 14;
+  const cy = LANE_Y[playerRow];
   // Fuselage
   ctx.fillStyle = C.green;
-  ctx.fillRect(-14, -3, 28, 6);
+  ctx.fillRect(cx - 14, cy - 3, 28, 6);
   // Nose (pointing right)
   ctx.fillStyle = C.bGreen;
-  ctx.fillRect(14, -2, 7, 4);
+  ctx.fillRect(cx + 14, cy - 2, 7, 4);
   // Cockpit bubble
   ctx.fillStyle = C.bGreen;
-  ctx.fillRect(-4, -8, 10, 7);
-  // Wings (wide vertical slab)
+  ctx.fillRect(cx - 4, cy - 8, 10, 7);
+  // Wings
   ctx.fillStyle = C.cyan;
-  ctx.fillRect(-2, -12, 8, 24);
+  ctx.fillRect(cx - 2, cy - 12, 8, 24);
   // Tail fins
   ctx.fillStyle = C.cyan;
-  ctx.fillRect(-14, -10, 7, 6);   // top fin
-  ctx.fillRect(-14,   4, 7, 6);   // bottom fin
-
-  ctx.restore();
+  ctx.fillRect(cx - 14, cy - 10, 7, 6);
+  ctx.fillRect(cx - 14, cy + 4,  7, 6);
 }
 
 function drawTanks() {
@@ -586,8 +580,8 @@ document.addEventListener('keydown', e => {
   if ((state === ST.GAME_OVER || state === ST.CONGRATS) && !enterNameMode) return; // wait for timer
 
   if (state === ST.PLAYING) {
-    if (e.key === 'ArrowUp')   { e.preventDefault(); playerRow = Math.max(0, playerRow - 1); playerDir = -1; }
-    if (e.key === 'ArrowDown') { e.preventDefault(); playerRow = Math.min(2, playerRow + 1); playerDir =  1; }
+    if (e.key === 'ArrowUp')   { e.preventDefault(); playerRow = Math.max(0, playerRow - 1); }
+    if (e.key === 'ArrowDown') { e.preventDefault(); playerRow = Math.min(2, playerRow + 1); }
     if (e.key === ' ' || e.key === 'z' || e.key === 'Z') { e.preventDefault(); fireRocket(); }
   }
 });
